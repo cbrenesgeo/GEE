@@ -1,0 +1,65 @@
+// COMPUTACIÓN DE INDICES NORMALIZADOS
+
+var IMG = ee.ImageCollection('COPERNICUS/S2')
+                  .filterDate('2018-01-01', '2019-06-30')
+                  // Pre-filter to get less cloudy granules.
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20));
+                  
+
+
+var IMG_Filtro = ee.Image(IMG.median());
+var IMG_Clip = IMG_Filtro.clip (ROI_CR);
+Map.addLayer (IMG_Clip, {
+  min: 0.0,
+  max: 0.4,
+  gamma:1.0,
+  bands: ['B4','B3','B2']}, 
+  'Imagen Landsat 5');
+print (IMG_Filtro);
+Map.centerObject (IMG_Clip);
+
+
+//FORMULAS//
+
+//NDVI//
+var NDVI = IMG_Clip.expression(
+    '((NIR - RED) / (NIR + RED))', 
+    {
+      'NIR': IMG_Clip.select('B8'),
+      'RED': IMG_Clip.select('B4')
+});
+
+
+Map.addLayer(NDVI,{min: -1.0, max:1.0, palette: ['FFFFFF', '339900']},"NDVI");
+
+//NDBI//
+var NDBI = IMG_Clip.expression(
+    '((SWIR - NIR) / (SWIR + NIR))', 
+    {
+      'NIR': IMG_Clip.select('B8'),
+      'SWIR': IMG_Clip.select('B11')
+});
+
+
+Map.addLayer(NDBI,{min: -1.0, max:1.0, palette: ['FFFFFF', '339900']},"NDVI");
+
+
+//Exportación  a google drive//
+
+//NDVI//
+Export.image.toDrive({
+  image: NDVI,
+  description: "NDVI_gam_S2_TEST",
+  folder: "CBM",
+  scale: 10,
+  maxPixels: 5000000000,
+  region: ROI_CR});
+
+//NDBI//
+Export.image.toDrive({
+  image: NDBI,
+  description: "NDBI_gam_S2_TEST",
+  folder: "CBM",
+  scale: 10,
+  maxPixels: 5000000000,
+  region: ROI_CR});
