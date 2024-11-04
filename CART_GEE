@@ -1,0 +1,121 @@
+//CART, RF and K-MEANS classification using S2 image as an ASSET
+
+// Cargar la imagen de Sentinel-2 y los datos de entrenamiento desde los assets
+  // Cambia 'tu_usuario' por tu nombre de usuario en GEE si es necesario
+  // Cambia 'tu_usuario' por tu nombre de usuario en GEE si es necesario
+
+// Definir bandas a utilizar
+var bands_to_use = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7'];  // Ajusta las bandas según las disponibles en S2_TRIF si es necesario
+
+// Definir el campo de clases
+var landcover_labels = 'cod_2';  // Campo de la tabla de atributos para las clases
+
+// Visualización para Sentinel-2
+var S2_viz = {bands: ['b4', 'b3', 'b2'], min: 0, max: 3000};
+
+// Mostrar la imagen de Sentinel-2 en el mapa
+Map.centerObject(S2_TRIF, 10);  // Ajustar el nivel de zoom si es necesario
+Map.addLayer(S2_TRIF, S2_viz, 'Sentinel-2 Image');
+
+// Colorear los puntos de entrenamiento
+var palette_landcover = ee.List([
+  '25CF1C', // BOSQUE LATIFOLIADO
+  '006400', // BOSQUE DE CONIFERAS
+  '8FBC8F', // BOSQUE MIXTO
+  'FFD700', // MATORRAL/GUAMIL
+  '556B2F', // PLANTACIÓN FORESTAL
+  '7CFC00', // PASTOS
+  '32CD32', // CULTIVOS ANUALES
+  'ADFF2F', // CULTIVOS PERENNES
+  '228B22', // CAFÉ
+  '808080', // UAH
+  'A52A2A', // SUELO DESNUDO
+  '4682B4', // CUERPOS AGUA
+  'FF4500', // ASENTAMIENTOS
+  'F0E68C', // NUBES
+  '708090'  // SOMBRAS
+]);
+
+var values_landcover = ee.List([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+
+var training_points_withcolors = TRAIN_TRIF.map(function(f) {
+  var klass = f.get(landcover_labels);
+  var index = values_landcover.indexOf(klass);
+  return f.set({stylez: {color: ee.List(palette_landcover).get(index)}});
+});
+
+Map.addLayer(training_points_withcolors.style({styleProperty: "stylez"}), {}, 'Training Points');
+
+// Asociar puntos de entrenamiento con valores espectrales
+var training_extract = S2_TRIF.select(bands_to_use).sampleRegions({
+  collection: TRAIN_TRIF,
+  properties: [landcover_labels],
+  scale: 10
+});
+
+print(training_extract, 'Training Extract');
+
+// Dividir el conjunto de datos en entrenamiento y validación
+var split = 0.8;  // Proporción para el conjunto de entrenamiento
+var withRandom = training_extract.randomColumn('random');
+var trainingSet = withRandom.filter(ee.Filter.lt('random', split));
+var validationSet = withRandom.filter(ee.Filter.gte('random', split));
+
+// Clasificador CART
+var trained_CART = ee.Classifier.smileCart()
+  .train(trainingSet, landcover_labels, bands_to_use);
+
+var classified_CART = S2_TRIF.select(bands_to_use).classify(trained_CART);
+
+Map.addLayer(classified_CART, {
+  min: 1, max: 15, 
+  palette: [
+    '25CF1C', '006400', '8FBC8F', 'FFD700', '556B2F', '7CFC00', 
+    '32CD32', 'ADFF2F', '228B22', '808080', 'A52A2A', '4682B4', 
+    'FF4500', 'F0E68C', '708090']
+}, 'CART Classification');
+
+// Clasificador Random Forest con número de árboles ajustable
+var numTrees = 250;  // Cambia este valor para ajustar el número de árboles
+var trained_RF = ee.Classifier.smileRandomForest(numTrees)
+  .train(trainingSet, landcover_labels, bands_to_use);
+
+var classified_RF = S2_TRIF.select(bands_to_use).classify(trained_RF);
+
+Map.addLayer(classified_RF, {
+  min: 1, max: 15, 
+  palette: [
+    '25CF1C', '006400', '8FBC8F', 'FFD700', '556B2F', '7CFC00', 
+    '32CD32', 'ADFF2F', '228B22', '808080', 'A52A2A', '4682B4', 
+    'FF4500', 'F0E68C', '708090']
+}, 'RF Classification');
+
+// Evaluar el clasificador RF en el conjunto de validación
+var validation = validationSet.classify(trained_RF);
+var errorMatrix = validation.errorMatrix(landcover_labels, 'classification');
+print('Matriz de error:', errorMatrix);
+print('Precisión general:', errorMatrix.accuracy());
+
+// Clasificación No Supervisada (K-Means)
+var randomtraining = S2_TRIF.sample({
+    region: S2_TRIF.geometry(),
+    scale: 10,
+    numPixels: 500,
+    tileScale: 10
+});
+
+var numberOfClasses = 15;
+var clusterer = ee.Clusterer.wekaKMeans(numberOfClasses).train(randomtraining);
+
+var unsup = S2_TRIF.cluster(clusterer);
+Map.addLayer(unsup.randomVisualizer(), {}, '15 Clusters');
+
+// Exportar la capa de clasificación RF a Google Drive
+Export.image.toDrive({
+  image: classified_RF,
+  description: 'RF_Classification_2023_trifinio',
+  folder: '2023_trifinio',
+  scale: 10,
+  region: S2_TRIF.geometry(),
+  maxPixels: 1e13
+});
