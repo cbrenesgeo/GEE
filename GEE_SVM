@@ -1,0 +1,87 @@
+//SVM classification using S2 image as an ASSET
+
+// Cargar la imagen de entrada desde el asset S2_TRIF
+var img = ee.Image('projects/ee-christianbrenes75/assets/trif_s2');
+
+// Verificar los nombres de las bandas de la imagen
+print('Nombres de las bandas de la imagen:', img.bandNames());
+
+// Cargar los datos de entrenamiento desde el asset TRAIN_TRIF
+var trainingData = ee.FeatureCollection('projects/ee-christianbrenes75/assets/train_301024_ptos');
+
+// Lista de clases en el campo 'COD_2' que se corresponde con las categorías proporcionadas
+var classes = ee.List.sequence(1, 15);  // Clases de 1 a 15
+
+// Función para tomar el 10% de los puntos de cada clase
+var getStratifiedSample = function(classValue) {
+  var classPoints = trainingData.filter(ee.Filter.eq('cod_2', classValue));
+  var count = classPoints.size();
+  var sampleSize = ee.Number(count).multiply(0.1).int();  // Tomar el 10% de cada clase
+  return classPoints.limit(sampleSize);
+};
+
+// Crear una colección de muestras estratificadas para cada clase y aplanar la colección
+var stratifiedSample = ee.FeatureCollection(
+  classes.map(function(classValue) {
+    return getStratifiedSample(classValue);
+  })
+).flatten();  // Unir todas las colecciones en una sola
+
+// Verificar la muestra estratificada
+print('Muestra estratificada:', stratifiedSample.first());
+Map.addLayer(stratifiedSample, {color: 'blue'}, 'Muestra Estratificada');
+
+// Centrar el mapa en los datos de entrenamiento
+Map.centerObject(stratifiedSample, 12);
+
+// Samplear la imagen en los puntos de la muestra estratificada
+var trainingSample = img.sampleRegions({
+  collection: stratifiedSample,
+  properties: ['cod_2'],  // Mantener el campo de clase
+  scale: 10  // Ajusta este valor según la resolución de tu imagen Sentinel-2
+});
+
+// Verificar las propiedades del primer elemento del conjunto de entrenamiento
+print('Primer elemento del trainingSample:', trainingSample.first());
+
+// Entrenar un clasificador SVM con los datos de entrenamiento
+var trainedClassifier = ee.Classifier.libsvm().train({
+  features: trainingSample,
+  classProperty: 'cod_2',  // El campo que contiene las clases
+  inputProperties: img.bandNames()  // Las bandas de la imagen de entrada
+});
+
+// Imprimir información del clasificador entrenado
+print('Resultados del clasificador entrenado', trainedClassifier.explain());
+
+// Obtener la matriz de confusión y precisión del entrenamiento
+var trainAccuracy = trainedClassifier.confusionMatrix();
+print('Training error matrix', trainAccuracy);
+print('Training overall accuracy', trainAccuracy.accuracy());
+
+// Clasificar la imagen utilizando el clasificador entrenado
+var imgClassified = img.classify(trainedClassifier);
+
+// Definir la visualización de las clases con la paleta correspondiente a las categorías
+var classVis = {
+  min: 1,
+  max: 15,
+  palette: [
+    '25CF1C', '006400', '8FBC8F', 'FFD700', '556B2F', '7CFC00', 
+    '32CD32', 'ADFF2F', '228B22', '808080', 'A52A2A', '4682B4', 
+    'FF4500', 'F0E68C', '708090'
+  ]
+};
+
+// Añadir la imagen clasificada al mapa
+Map.addLayer(imgClassified, classVis, 'Clasificación SVM');
+
+// Exportar la capa de clasificación RF a Google Drive
+Export.image.toDrive({
+  image: imgClassified,
+  description: 'SVM_Classification_2024',
+  folder: '2023_trifinio',
+  scale: 10,
+  //region: S2_TRIF.geometry(),
+  maxPixels: 1e13
+});
