@@ -1,0 +1,107 @@
+/* Identificación de sitios atacados por el gorgojo con base en datos de campo del ICF
+
+Para usar con imagenes sentinel 2, Landat 8 y 9, y Planet */
+
+//centra el mapa
+Map.centerObject({
+  object: AOI,
+  zoom: 7
+});
+
+// Crear un panel para mostrar la información de la característica seleccionada
+var infoPanel = ui.Panel({
+  style: { width: '300px', position: 'bottom-right' }
+});
+ui.root.add(infoPanel);
+
+// Evento de clic en el mapa para mostrar información de la característica
+Map.onClick(function (coords) {
+  var point = ee.Geometry.Point([coords.lon, coords.lat]);
+  var buffer = point.buffer(100); // Crea un buffer de 100 metros alrededor del clic
+
+  var feature = ptos.filterBounds(buffer).first();
+
+  feature.evaluate(function (result) {
+    infoPanel.clear(); // Limpia el panel antes de añadir nueva información
+    if (result) {
+      var recno = result.properties.recno || 'Información no disponible';
+      var label = ui.Label({
+        value: 'recno: ' + recno,
+        style: { fontSize: '16px', margin: '4px 8px' }
+      });
+      infoPanel.add(label);
+    } else {
+      infoPanel.add(ui.Label('No hay datos para este punto'));
+    }
+  });
+});
+
+// Visualización del AOI
+var empty = ee.Image().byte();
+var outline = empty.paint({
+  featureCollection: AOI,
+  color: 1,
+  width: 3
+});
+var outline2 = empty.paint({
+  featureCollection: AOI_2,
+  color: 1,
+  width: 3
+});
+
+// Variable de control de fecha para las 3 colecciones / Cambiar de acuerdo al mes de análisis
+var startDate = '2024-04-01'; // Ajusta la fecha de inicio aquí
+var endDate = '2024-05-01'; // Ajusta la fecha de fin aquí
+
+// Función de factores de escala aplicable a Landsat 8 y 9
+function applyScaleFactorsLandsat(image) {
+  var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0);
+  return image.addBands(opticalBands, null, true)
+              .addBands(thermalBands, null, true);
+}
+
+// LANDSAT 9
+var datasetL9 = ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')
+  .filterDate(startDate, endDate)
+  .map(applyScaleFactorsLandsat)
+  .map(function (image) { return image.clip(AOI); }); // Cortar con AOI
+
+Map.addLayer(datasetL9, { bands: ['SR_B4', 'SR_B3', 'SR_B2'], min: 0.0, max: 0.3 }, 'L9 True Color (432)');
+
+// LANDSAT 8
+var datasetL8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+  .filterDate(startDate, endDate)
+  .map(applyScaleFactorsLandsat)
+  .map(function (image) { return image.clip(AOI); }); // Cortar con AOI
+
+Map.addLayer(datasetL8, { bands: ['SR_B4', 'SR_B3', 'SR_B2'], min: 0.0, max: 0.3 }, 'L8 True Color (432)');
+
+// SENTINEL 2
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0).and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);
+}
+
+var datasetS2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterDate(startDate, endDate)
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+  .map(maskS2clouds)
+  .map(function (image) { return image.clip(AOI); }); // Cortar con AOI
+
+Map.addLayer(datasetS2.mean(), { bands: ['B4', 'B3', 'B2'], min: 0.0, max: 0.3 }, 'S2 RGB');
+
+// PLANET NCFI
+var datasetPlanetNCFI = ee.ImageCollection('projects/planet-nicfi/assets/basemaps/americas')
+  .filterDate(startDate, endDate)
+  .map(function (image) { return image.clip(AOI); }); // Cortar con AOI
+
+Map.addLayer(datasetPlanetNCFI.mean(), { bands: ['R', 'G', 'B'], min: 75.0, max: 1240, 'gamma': 1.8 }, 'Planet NCFI RGB');
+
+// Añadir los puntos al mapa
+Map.addLayer(ptos, { color: 'blue' }, 'Centroides');
+Map.addLayer(outline2, { palette: 'white' }, 'Ataques');
+Map.addLayer(outline, { palette: 'yellow' }, 'Deptos HN');
