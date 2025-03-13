@@ -1,0 +1,113 @@
+//  Radar Vegetation Index (RVI) Monitoring Using Sentinel-1 SAR Imagery in Google Earth Engine
+//codigo modificado brenes
+
+// Define a polygon using geographic coordinates
+/*var studyAreaCoords = [ 
+  [-114.35624376250594, 42.927026456478906],
+  [-114.35624376250594, 42.29839867493405],
+  [-113.33451524688094, 42.29839867493405],
+  [-113.33451524688094, 42.927026456478906]
+];*/
+
+// Convert coordinates into a polygon geometry
+//var studyArea = ee.Geometry.Polygon(studyAreaCoords);
+
+// Center the map on the study area
+Map.centerObject(studyArea, 16);
+Map.addLayer(studyArea, {}, 'Study Area 1')
+
+// Load Sentinel-1 SAR Image Collection
+var sentinel1Collection = ee.ImageCollection("COPERNICUS/S1_GRD")
+  .filterDate('2020-01-01', '2025-03-12') // Select images from 2020 to 2025
+  .filterBounds(studyArea) // Filter images within the study area
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) // Ensure VV polarization is available
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH')) // Ensure VH polarization is available
+  .filter(ee.Filter.eq('instrumentMode', 'IW')) // Select only Interferometric Wide (IW) mode images
+  .filter(ee.Filter.eq('orbitProperties_pass', 'ASCENDING')) // Filter ascending orbit images
+  .select(['VV', 'VH']); // Select VV and VH bands for analysis
+
+// Print details of the filtered Sentinel-1 dataset
+print('Filtered Sentinel-1 Collection:', sentinel1Collection);
+
+// Compute RVI (Radar Vegetation Index) for each image in the collection
+var rviCollection = sentinel1Collection.map(function(image) {
+  var sigma = ee.Image(10).pow(image.divide(10)); // Convert dB values to linear scale
+  
+  // Compute RVI using the formula: RVI = (4 * VH) / (VH + VV)
+  var rvi = sigma.expression('(4 * vh) / (vh + vv)', {
+    'vv': sigma.select('VV'),
+    'vh': sigma.select('VH')
+  }).rename('RVI');
+
+  // Apply a 30-meter focal median filter for noise reduction
+  var rviSmoothed = rvi.focalMedian(30, 'square', 'meters');
+
+  // Copy time properties and return the processed image
+  return rviSmoothed.copyProperties(image, ['system:time_start', 'system:time_end']);
+});
+
+// Display the mean RVI image
+Map.addLayer(rviCollection.mean().clip(studyArea), {min: 0, max: 1, palette: ['blue', 'green', 'yellow']}, 'Mean RVI');
+
+// Define a smaller region for time-series analysis
+/*var subRegionCoords = [
+  [-113.83371706548077, 42.6777691299767],
+  [-113.83371706548077, 42.648609719653365],
+  [-113.81363268437725, 42.648609719653365],
+  [-113.81363268437725, 42.6777691299767]
+];*/
+
+// Convert to a geometry polygon
+//var subRegion = ee.Geometry.Polygon(subRegionCoords);
+Map.addLayer(subRegion, {}, 'Sub-Region')
+
+// Generate RVI time series for the subregion
+print(
+  ui.Chart.image.series({
+    imageCollection: rviCollection,
+    region: subRegion,
+    reducer: ee.Reducer.mean(),
+    scale: 10,
+    xProperty: 'system:time_start'
+  }).setOptions({
+    title: 'Radar Vegetation Index (RVI) Time Series',
+    vAxis: {title: 'RVI'},
+    hAxis: {title: 'Year'},
+    series: {0: {color: 'green'}},
+    pointSize: 3
+  })
+);
+
+// Generate Sentinel-1 backscatter time series for VV & VH
+print(
+  ui.Chart.image.series({
+    imageCollection: sentinel1Collection,
+    region: subRegion,
+    reducer: ee.Reducer.mean(),
+    scale: 10,
+    xProperty: 'system:time_start'
+  }).setOptions({
+    title: 'Sentinel-1 VV & VH Backscatter Time Series',
+    vAxis: {title: 'Backscatter (dB)'},
+    hAxis: {title: 'Year'},
+    series: {0: {color: 'blue'}, 1: {color: 'orange'}},
+    pointSize: 3
+  })
+);
+
+// Extract RVI images for 2023-2024
+var rvi_2023_2024 = rviCollection.filterDate('2024-03-04', '2024-03-16').mean();
+
+// Add RVI layer for 2023-2024
+Map.addLayer(rvi_2023_2024.clip(studyArea), {min: 0, max: 1, palette: ['blue', 'green', 'yellow']}, 'RVI 2023-2024');
+
+// Export the processed RVI image
+Export.image.toDrive({
+  image: rvi_2023_2024.clip(studyArea),
+  description: 'RVI_2023_2024',
+  region: studyArea,
+  scale: 30,
+  crs: 'EPSG:4326',
+  folder: 'RVI_Analysis',
+  maxPixels: 1e13
+});
